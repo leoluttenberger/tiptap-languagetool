@@ -27,7 +27,7 @@
 
 import { Extension } from '@tiptap/core'
 import { Dexie } from 'dexie'
-import { debounce } from 'lodash'
+import { debounce, isNull } from 'lodash'
 import { Node as PMNode } from 'prosemirror-model'
 import { Plugin, PluginKey, Transaction } from 'prosemirror-state'
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
@@ -128,7 +128,7 @@ declare module '@tiptap/core' {
 }
 
 interface TextNodesWithPosition {
-  text: string
+  text?: string
   from: number
   to: number
 }
@@ -143,7 +143,7 @@ interface LanguageToolOptions {
 interface LanguageToolStorage {
   match?: Match
   loading?: boolean
-  matchRange?: { from: number; to: number }
+  matchRange?: { from: number; to: number } 
   active: boolean
 }
 // *************** OVER: TYPES *****************
@@ -185,12 +185,12 @@ export enum LanguageToolHelpingWords {
 
 const dispatch = (tr: Transaction) => editorView.dispatch(tr)
 
-const updateMatchAndRange = (m?: Match, range?) => {
+const updateMatchAndRange = (m?: Match, range?: { from: any; to: any }) => {
   if (m) match = m
   else match = undefined
 
   if (range) matchRange = range
-  else matchRange = undefined
+  else matchRange = { from:0,to:0}
 
   const tr = editorView.state.tr
   tr.setMeta(LanguageToolHelpingWords.MatchUpdatedTransactionName, true)
@@ -232,7 +232,7 @@ export function changedDescendants(
   old: PMNode,
   cur: PMNode,
   offset: number,
-  f: (node: PMNode, pos: number, cur: PMNode) => void,
+  file: (node: PMNode | null, pos: number | null, cur: PMNode | null ) => void,
 ): void {
   const oldSize = old.childCount,
     curSize = cur.childCount
@@ -248,10 +248,10 @@ export function changedDescendants(
       }
     }
 
-    f(child, offset, cur)
+    file(child, offset, cur)
 
-    if (j < oldSize && old.child(j).sameMarkup(child)) changedDescendants(old.child(j), child, offset + 1, f)
-    else child.nodesBetween(0, child.content.size, f, offset + 1)
+    if (j < oldSize && old.child(j).sameMarkup(child)) changedDescendants(old.child(j), child, offset + 1, file)
+    else child.nodesBetween(0, child.content.size, file, offset + 1)
 
     offset += child.nodeSize
   }
@@ -275,9 +275,11 @@ const getMatchAndSetDecorations = async (doc: PMNode, text: string, originalFrom
     },
     body: `text=${encodeURIComponent(text)}&language=en-US&enabledOnly=false`,
   }
-
+  // Post option ouput in console
+  //console.log(postOptions)
   const ltRes: LanguageToolResponse = await (await fetch(apiUrl, postOptions)).json()
-
+  // Post response output in console
+  //console.log(ltRes)
   const { matches } = ltRes
 
   const decorations: Decoration[] = []
@@ -327,25 +329,26 @@ const proofreadAndDecorateWholeDoc = async (doc: PMNode, nodePos = 0) => {
       index += 1
       return
     }
-
-    const intermediateTextNodeWIthPos = {
-      text: '',
+    const intermediateTextNodeWIthPos : TextNodesWithPosition = {
+      text: "",
       from: -1,
       to: -1,
     }
+    if(intermediateTextNodeWIthPos.text != undefined && node.text != undefined)
+    {
+      if (textNodesWithPosition[index]) {
+        intermediateTextNodeWIthPos.text = textNodesWithPosition[index].text + node.text
+        intermediateTextNodeWIthPos.from = textNodesWithPosition[index].from + nodePos
+        intermediateTextNodeWIthPos.to =  intermediateTextNodeWIthPos.from + intermediateTextNodeWIthPos.text.length + nodePos
+      } else {
+        intermediateTextNodeWIthPos.text = node.text
+        intermediateTextNodeWIthPos.from = pos + nodePos
+        intermediateTextNodeWIthPos.to = pos + nodePos + node.text.length
+      }
+      textNodesWithPosition[index] = intermediateTextNodeWIthPos
 
-    if (textNodesWithPosition[index]) {
-      intermediateTextNodeWIthPos.text = textNodesWithPosition[index].text + node.text
-      intermediateTextNodeWIthPos.from = textNodesWithPosition[index].from + nodePos
-      intermediateTextNodeWIthPos.to =
-        intermediateTextNodeWIthPos.from + intermediateTextNodeWIthPos.text.length + nodePos
-    } else {
-      intermediateTextNodeWIthPos.text = node.text
-      intermediateTextNodeWIthPos.from = pos + nodePos
-      intermediateTextNodeWIthPos.to = pos + nodePos + node.text.length
     }
 
-    textNodesWithPosition[index] = intermediateTextNodeWIthPos
   })
 
   textNodesWithPosition = textNodesWithPosition.filter(Boolean)
@@ -409,7 +412,7 @@ export const LanguageTool = Extension.create<LanguageToolOptions, LanguageToolSt
   addOptions() {
     return {
       language: 'auto',
-      apiUrl: process?.env?.VUE_APP_LANGUAGE_TOOL_URL + 'check',
+      apiUrl: process.env.VUE_APP_LANGUAGE_TOOL_URL + 'check',
       automaticMode: true,
       documentId: undefined,
     }
@@ -467,9 +470,8 @@ export const LanguageTool = Extension.create<LanguageToolOptions, LanguageToolSt
             },
           },
         }) => {
-          match = null
-          matchRange = null
-
+          match = undefined
+          matchRange = { from: 0 , to: 0 }
           dispatch(
             tr
               .setMeta(LanguageToolHelpingWords.MatchRangeUpdatedTransactionName, true)
@@ -506,7 +508,7 @@ export const LanguageTool = Extension.create<LanguageToolOptions, LanguageToolSt
         key: new PluginKey('languagetoolPlugin'),
         props: {
           decorations(state) {
-            return this.getState(state)
+            return decorationSet.map(state.tr.mapping,state.doc)
           },
           attributes: {
             spellcheck: 'false',
@@ -568,15 +570,17 @@ export const LanguageTool = Extension.create<LanguageToolOptions, LanguageToolSt
                   if (!(nodeFrom <= from && to <= nodeTo)) return
 
                   changedNodeWithPos = { node, pos }
+
+                  if (changedNodeWithPos) {
+                    onNodeChanged(
+                      changedNodeWithPos.node,
+                      changedNodeWithPos.node.textContent,
+                      changedNodeWithPos.pos + 1,
+                    )
+                  }
                 })
 
-                if (changedNodeWithPos) {
-                  onNodeChanged(
-                    changedNodeWithPos.node,
-                    changedNodeWithPos.node.textContent,
-                    changedNodeWithPos.pos + 1,
-                  )
-                }
+                
               }
             }
 

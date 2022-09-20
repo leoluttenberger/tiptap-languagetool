@@ -24,3 +24,5 @@ pnpm-debug.log*
 
 reference-code
 *.env
+
+package-lock.json
